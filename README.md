@@ -173,7 +173,7 @@ Le rapport contient :
 - la hiérarchie des protocoles ;
 - une chronologie ;
 - des points d'attention (RST, erreurs DNS/ICMP, trafic en clair, ARP suspect,
-  SYN sans réponse) ;
+  SYN sans réponse, scan de ports, pic DNS, transfert sortant, ports inhabituels) ;
 - une fiche explicative par catégorie présente.
 
 Cliquer sur une ligne ouvre l'explication complète du protocole.
@@ -187,6 +187,29 @@ pcapkit tests/sample.pcap --open
 
 Catégories attendues : `Résolution ARP`, `DNS`, `Connexion TCP`,
 `Transport TCP`, `Web (HTTP)`, `ICMP`, `TLS (chiffré)`, `DHCP`.
+
+---
+
+## Détections automatiques
+
+En plus des statistiques, PcapKit signale :
+
+| Détection | Logique |
+|---|---|
+| TCP RST | présence de paquets RST |
+| Erreurs DNS | code retour différent de 0 |
+| Erreurs ICMP | destination unreachable, TTL dépassé |
+| Trafic en clair | HTTP, FTP ou Telnet |
+| ARP suspect | une IP associée à plusieurs adresses MAC |
+| SYN sans réponse | SYN sans SYN-ACK |
+| Scan de ports | au moins 10 ports distincts en SYN depuis une même source, majoritairement sans établissement |
+| Pic DNS | au moins 50 requêtes DNS depuis un hôte à 5 req/s ou plus |
+| Transfert sortant important | au moins 1 Mo envoyé, ratio sortant/entrant ≥ 3 et ≥ 25 % du volume total |
+| Ports inhabituels | 1080, 1337, 4444, 5555, 6667, 9001, 9050, 31337 |
+
+Ces règles sont volontairement simples et explicables. Elles ne remplacent pas un
+IDS : chaque alerte est un point à vérifier, pas une preuve. Les seuils sont
+définis dans `build_anomalies()` et peuvent être ajustés.
 
 ---
 
@@ -227,11 +250,12 @@ pcapkit ma-capture.pcap --ai --ai-provider openai --ai-model gpt-4o-mini --open
 ### Voir ce qui serait envoyé
 
 ```bash
-pcapkit ma-capture.pcap --ai --ai-dry-run
+pcapkit ma-capture.pcap --ai-dry-run
 ```
 
-Cette commande affiche le résumé exact et n'appelle aucun modèle. C'est le moyen
-le plus simple de vérifier la confidentialité avant un envoi.
+Le mode dry-run implique `--ai` et n'appelle aucun modèle. Il affiche le résumé
+exact qui serait envoyé : c'est le moyen le plus simple de vérifier la
+confidentialité avant un envoi.
 
 ### Ce qui est envoyé
 
@@ -242,9 +266,16 @@ Par défaut, le modèle reçoit uniquement un **résumé agrégé** :
 - principales conversations, avec des hôtes anonymisés `H1`, `H2`, etc. ;
 - titres des points d'attention.
 
-Ne sont **pas** envoyés : payloads, URL, identifiants, cookies, adresses MAC,
-contenu des paquets. L'anonymisation est active par défaut ; `--no-ai-anonymize`
-envoie les adresses réelles et est déconseillé.
+Ne sont **jamais** envoyés :
+
+- le fichier de capture lui-même ;
+- le contenu des paquets (payloads) ;
+- les URL, identifiants, cookies et mots de passe ;
+- les adresses IP et MAC réelles avec l'anonymisation par défaut.
+
+L'anonymisation est active par défaut ; `--no-ai-anonymize` envoie les adresses
+réelles et est déconseillé. La question fournie avec `--ai-question` est envoyée
+telle quelle : ne mettez pas de secret dedans.
 
 ### Limites
 
@@ -351,7 +382,7 @@ Le prompt système est la constante `SYSTEM_PROMPT` dans `pcapkit.py`.
 python3 tests/make_sample.py
 python3 tests/check.py
 python3 pcapkit.py tests/sample.pcap -o /tmp/sample.html
-python3 pcapkit.py tests/sample.pcap --ai --ai-dry-run
+python3 pcapkit.py tests/sample.pcap --ai-dry-run
 ```
 
 Vérification du plugin :
@@ -368,7 +399,8 @@ tshark -r tests/sample.pcap -T fields \
 - Le rapport HTML est généré localement, sans réseau.
 - Le plugin Wireshark ne fait aucun appel réseau.
 - L'IA est optionnelle et n'envoie qu'un résumé agrégé, anonymisé par défaut.
-- Utilisez `--ai --ai-dry-run` pour inspecter le texte avant tout envoi.
+- Utilisez `--ai-dry-run` pour inspecter le texte avant tout envoi.
+- Le mode dry-run n'appelle aucun modèle et n'ouvre aucune connexion réseau.
 - Pour des captures sensibles, préférez Ollama en local à une API cloud.
 
 ---

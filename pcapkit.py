@@ -36,6 +36,17 @@ SERVER_PORTS = {
     9200, 27017,
 }
 
+SUSPICIOUS_PORTS = {
+    1080: "proxy SOCKS",
+    1337: "backdoor",
+    4444: "Metasploit/backdoor",
+    5555: "ADB/backdoor",
+    6667: "IRC",
+    9001: "Tor",
+    9050: "Tor",
+    31337: "backdoor",
+}
+
 ROLES = {
     "Résolution ARP": "Associe une adresse IP à une adresse MAC sur le réseau local",
     "DHCP": "Attribue automatiquement une IP et la configuration réseau",
@@ -522,6 +533,82 @@ def build_anomalies(packets: list[dict], stats: dict) -> list[tuple[str, str, st
         anomalies.append(("info", f"{cleartext} paquet(s) en clair",
                           "HTTP, FTP ou Telnet peuvent exposer des identifiants et des données. Préférez HTTPS, SFTP et SSH."))
 
+    dns_queries: dict[str, list[float]] = defaultdict(list)
+    for p in packets:
+        if p["cat"] == "DNS" and p["dns_resp"] is False and p["src_host"] != "?":
+            dns_queries[p["src_host"]].append(p["t"])
+    dns_floods = []
+    for host, times in dns_queries.items():
+        if len(times) < 50:
+            continue
+        span = max(times) - min(times)
+        rate = len(times) / max(span, 1.0)
+        if rate >= 5:
+            dns_floods.append((host, len(times), span, rate))
+    if dns_floods:
+        dns_floods.sort(key=lambda item: item[3], reverse=True)
+        details = "; ".join(
+            f"{host} ({n} requêtes en {fmt_duration(span)}, {rate:.0f}/s)"
+            for host, n, span, rate in dns_floods[:5]
+        )
+        anomalies.append((
+            "warn",
+            f"Pic de requêtes DNS ({len(dns_floods)} hôte(s))",
+            f"Volume anormal de requêtes DNS : {details}. Vérifiez un client mal configuré, "
+            "un scan DNS ou une tentative d'exfiltration.",
+        ))
+
+    client_sent: Counter[str] = Counter()
+    client_recv: Counter[str] = Counter()
+    for p in packets:
+        if p["src_host"] == "?" or p["dst_host"] == "?":
+            continue
+        if p["dir"] == C2S:
+            client_sent[p["src_host"]] += p["length"]
+        elif p["dir"] == S2C:
+            client_recv[p["dst_host"]] += p["length"]
+    total_bytes = max(stats["bytes"], 1)
+    exfil = []
+    for host, sent in client_sent.items():
+        if sent < 1_000_000:
+            continue
+        recv = client_recv.get(host, 0)
+        ratio = sent / max(recv, 1)
+        if ratio >= 3 and sent >= total_bytes * 0.25:
+            exfil.append((host, sent, recv, ratio))
+    if exfil:
+        exfil.sort(key=lambda item: item[1], reverse=True)
+        details = "; ".join(
+            f"{host} ({fmt_bytes(sent)} envoyés / {fmt_bytes(recv)} reçus, ratio {ratio:.1f})"
+            for host, sent, recv, ratio in exfil[:5]
+        )
+        anomalies.append((
+            "warn",
+            f"Transfert sortant important ({len(exfil)} hôte(s))",
+            f"Volume sortant inhabituel : {details}. À confirmer : sauvegarde légitime, "
+            "envoi de fichier ou exfiltration.",
+        ))
+
+    suspicious_hits: set[tuple[str, str, int]] = set()
+    for p in packets:
+        if p["dport"] in SUSPICIOUS_PORTS:
+            suspicious_hits.add((p["src_host"], p["dst_host"], p["dport"]))
+        if p["sport"] in SUSPICIOUS_PORTS:
+            suspicious_hits.add((p["dst_host"], p["src_host"], p["sport"]))
+    suspicious: dict[tuple[str, str], set[int]] = defaultdict(set)
+    for src, dst, port in suspicious_hits:
+        suspicious[(src, dst)].add(port)
+    if suspicious:
+        details = "; ".join(
+            f"{src} → {dst} ({', '.join(f'{port} {SUSPICIOUS_PORTS[port]}' for port in sorted(ports))})"
+            for (src, dst), ports in list(suspicious.items())[:5]
+        )
+        anomalies.append((
+            "warn",
+            f"Connexion(s) vers des ports inhabituels ({len(suspicious)})",
+            f"Ports rarement légitimes : {details}. Vérifiez le service, l'utilisateur et l'heure.",
+        ))
+
     arp_map: dict[str, set[str]] = defaultdict(set)
     for p in packets:
         if "arp" in p["protos"] and p["arp_op"] == 2 and p["arp_src"] and p["eth_src"]:
@@ -534,15 +621,38 @@ def build_anomalies(packets: list[dict], stats: dict) -> list[tuple[str, str, st
 
     syn = set()
     synack = set()
+    syn_ports: dict[tuple[str, str], set[int]] = defaultdict(set)
     for p in packets:
         if p["cat"] != "Connexion TCP":
             continue
         if p["tcp_syn"] and not p["tcp_ack"]:
             syn.add((p["src_host"], p["dst_host"], p["dport"]))
+            if p["dport"] is not None:
+                syn_ports[(p["src_host"], p["dst_host"])].add(p["dport"])
         elif p["tcp_syn"] and p["tcp_ack"]:
             synack.add((p["dst_host"], p["src_host"], p["sport"]))
+
+    scans = []
+    for (src, dst), ports in syn_ports.items():
+        if len(ports) < 10:
+            continue
+        established = sum(1 for port in ports if (dst, src, port) in synack)
+        if established <= len(ports) // 3:
+            scans.append((src, dst, len(ports), established))
+    if scans:
+        details = "; ".join(
+            f"{src} → {dst} ({n} ports, {est} établi(s))"
+            for src, dst, n, est in scans[:5]
+        )
+        anomalies.append((
+            "warn",
+            f"Scan de ports probable ({len(scans)} source(s))",
+            f"Tentatives SYN vers de nombreux ports : {details}. Vérifiez l'origine, "
+            "la cible et le pare-feu ; un scan précède souvent une exploitation.",
+        ))
+
     unanswered = syn - synack
-    if unanswered:
+    if unanswered and not scans:
         anomalies.append(("info", f"{len(unanswered)} SYN sans SYN-ACK",
                           "Port fermé, pare-feu ou capture commencée au milieu d'une connexion. À confirmer."))
 
@@ -1151,7 +1261,7 @@ def main() -> int:
             "  python3 pcapkit.py capture.pcap -o rapport.html --open\n"
             "  python3 pcapkit.py capture.pcap --max-packets 0\n"
             "  python3 pcapkit.py capture.pcap --ai --ai-provider ollama --ai-model llama3.1\n"
-            "  python3 pcapkit.py capture.pcap --ai --ai-dry-run\n"
+            "  python3 pcapkit.py capture.pcap --ai-dry-run\n"
         ),
     )
     parser.add_argument("capture", type=Path, help="fichier .pcap / .pcapng à analyser")
@@ -1178,8 +1288,11 @@ def main() -> int:
     ai.add_argument("--ai-question", default=None,
                     help="question précise à poser au modèle en plus du résumé")
     ai.add_argument("--ai-dry-run", action="store_true",
-                    help="afficher le résumé qui serait envoyé, sans appeler de modèle")
+                    help="afficher le résumé qui serait envoyé, sans appeler de modèle (implique --ai)")
     args = parser.parse_args()
+
+    if args.ai_dry_run:
+        args.ai = True
 
     capture: Path = args.capture
     if not capture.is_file():
