@@ -2,6 +2,14 @@
 
 Rendre Wireshark plus lisible : catégories, sens des flux, rôle des protocoles,
 et un rapport HTML autonome. Le tout sans modifier le cœur de Wireshark.
+## 🖼️ Aperçu
+
+### Rapport HTML interactif
+![Vue d'ensemble du rapport](docs/docs_hero.png)
+![Analyse : conversations et points d'attention](docs/docs_analyse.png)
+
+### Profil Wireshark
+![Colonnes Catégorie / Sens / Rôle](docs/wireshark-profil.png)
 
 PcapKit ajoute trois choses :
 
