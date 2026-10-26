@@ -1,0 +1,14 @@
+####### User Interface: Columns ########
+
+# Packet list column format
+# Each pair of strings consists of a column title and its format
+gui.column.format:
+	"N°", "%m",
+	"Temps", "%t",
+	"Source", "%s",
+	"Destination", "%d",
+	"Protocole", "%p",
+	"Catégorie", "%Cus:pcapkit.cat:0:R",
+	"Sens", "%Cus:pcapkit.dir:0:R",
+	"Rôle", "%Cus:pcapkit.role:0:R",
+	"Infos", "%i"

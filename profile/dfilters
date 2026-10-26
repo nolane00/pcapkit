@@ -1,0 +1,27 @@
+# Profil PcapKit - boutons de filtres rapides
+"PcapKit: DNS" dns
+"PcapKit: Web" http || http2 || tcp.port == 80 || tcp.port == 8080
+"PcapKit: TLS / chiffre" tls || quic
+"PcapKit: ARP" arp
+"PcapKit: DHCP" dhcp || bootp
+"PcapKit: ICMP" icmp || icmpv6
+"PcapKit: Handshake TCP" tcp.flags.syn == 1
+"PcapKit: Erreurs TCP" tcp.analysis.flags || tcp.flags.reset == 1
+"PcapKit: Erreurs DNS" dns.flags.rcode != 0
+"PcapKit: Messagerie" smtp || imap || pop
+"PcapKit: Administration" ssh || telnet || rdp
+"PcapKit: Fichiers" ftp || ftp-data || smb || smb2
+"PcapKit: Supervision" snmp || ntp
+"PcapKit: Industriel" modbus || mbtcp
+"PcapKit: IPv4 seulement" ip
+"PcapKit: IPv6 seulement" ipv6
+"PcapKit: Trafic chiffre" tls || quic || ssh
+
+# Filtres Wireshark par defaut
+"Ethernet broadcast" eth.addr == ff:ff:ff:ff:ff:ff
+"No ARP" not arp
+"TCP only" tcp
+"UDP only" udp
+"Non-DNS port" !(udp.port == 53 || tcp.port == 53)
+"TCP or UDP port is 80 (HTTP)" tcp.port == 80 || udp.port == 80
+"No ARP and no DNS" not arp and not dns
